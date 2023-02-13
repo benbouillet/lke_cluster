@@ -1,0 +1,90 @@
+#!/bin/bash
+set -eEuo pipefail
+
+function deploy {
+    _validate
+    _fmt 
+    _lint
+    _plan
+    terraform apply tfplan
+    getkubeconfig
+}
+
+function destroy {
+    _destroyconfirmation
+    _get_kubeconfig_vars
+    _destroyplan
+    terraform apply tfplan_destroy
+    _delete_kubeconfig_conf
+}
+
+function update {
+    deploy
+}
+
+function _validate {
+	terraform validate
+}
+
+function _fmt {
+	terraform fmt -recursive
+}
+
+function _lint {
+	tflint --recursive
+}
+
+function _plan {
+	terraform plan -out tfplan
+}
+
+function _get_kubeconfig_vars {
+    LKE_CLUSTER=$(terraform output lke_kubeconfig | sed 's/^"\(.*\)"$/\1/' | base64 -d | yq '.clusters[].name')
+    LKE_CONTEXT=$(terraform output lke_kubeconfig | sed 's/^"\(.*\)"$/\1/' | base64 -d | yq '.contexts[].name')
+    LKE_USER=$(terraform output lke_kubeconfig | sed 's/^"\(.*\)"$/\1/' | base64 -d | yq '.users[].name')
+}
+
+function _set_current_context {
+    LKE_CONTEXT=$(terraform output lke_kubeconfig | sed 's/^"\(.*\)"$/\1/' | base64 -d | yq '.contexts[].name')
+    kubectl config set current-context $LKE_CONTEXT
+}
+
+function _delete_kubeconfig_conf {
+    kubectl config unset users.${LKE_USER}
+    kubectl config unset contexts.${LKE_CONTEXT}
+    kubectl config unset clusters.${LKE_CLUSTER}
+    kubectl config unset current-context
+}
+
+function _destroyplan {
+	terraform plan -out tfplan_destroy -destroy
+}
+
+function getkubeconfig {
+    cp ~/.kube/config ~/.kube/config.bak
+    rm -f tmp_kubeconfig
+	terraform output lke_kubeconfig | sed 's/^"\(.*\)"$/\1/' | base64 -d > ./tmp_kubeconfig
+    KUBECONFIG=~/.kube/config:./tmp_kubeconfig kubectl config view --flatten > ~/.kube/config
+    rm -f tmp_kubeconfig
+}
+
+function _destroyconfirmation {
+    if [ -z ${NO_CONFIRM+x} ]; then
+        echo "This action will destroy all resources."
+        read -p "Are your sure you want to proceed ? [Y/n] : " -n 1 -r
+        echo    # (optional) move to a new line
+        if ! [[ $REPLY =~ ^[yY]$ ]]
+        then
+           exit
+        fi
+    fi
+}
+
+function help {
+    echo "Usage: $0 <subcommand> <args>"
+    echo "Commands:"
+    compgen -A function | egrep -v "^_" | cat -n
+}
+
+TIMEFORMAT="Task completed in %3lR"
+time ${@:-help}
